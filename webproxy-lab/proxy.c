@@ -30,6 +30,7 @@ int parse_uri(char *uri, char *hostname, char *path, char *port);
 void *thread(void *vargp);
 void evict_lru(int required_size);
 void insert_cache(char *uri, char *data, int size);
+void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
 
 int main(int argc, char **argv)
 {
@@ -171,7 +172,8 @@ void doit(int clientfd) {
 
     // GET 이외의 지원하지 않는 메소드 처리
     if (strcasecmp(method, "GET")) {
-        printf("Proxy does not implement the method : %s\n", method);
+        clienterror(clientfd, method, "501", "Not Implemented",
+                "Proxy does not implement this method");
         return;
     }
 
@@ -183,7 +185,8 @@ void doit(int clientfd) {
     int serverfd = Open_clientfd(hostname, port);  //  Open_clientfd()는 hostname과 port를 기반으로 서버와 연결된 소켓을 리턴.
     if (serverfd < 0) {
         // 서버 연결 실패 시 로그 출력 후 함수 종료
-        printf("Connection failed to %s:%s\n", hostname, port);
+        clienterror(clientfd, hostname, "502", "Bad Gateway",
+                "Proxy couldn't connect to the server");
         return;
     }
 
@@ -293,4 +296,27 @@ int parse_uri(char *uri, char *hostname, char *path, char *port) {
     }
 
     return 0;
+}
+
+void clienterror(int fd, char *cause, char *errnum,
+                 char *shortmsg, char *longmsg) {
+    char buf[MAXLINE], body[MAXBUF];
+
+    // HTTP 응답 body 구성
+    sprintf(body, "<html><title>Tiny Error</title>");
+    sprintf(body + strlen(body), "<body bgcolor=\"ffffff\">\r\n");
+    sprintf(body + strlen(body), "%s: %s\r\n", errnum, shortmsg);
+    sprintf(body + strlen(body), "<p>%s: %s\r\n", longmsg, cause);
+    sprintf(body + strlen(body), "<hr><em>The Tiny Web proxy</em>\r\n");
+
+    // HTTP 응답 헤더
+    sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
+    Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "Content-type: text/html\r\n");
+    Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "Content-length: %lu\r\n\r\n", strlen(body));
+    Rio_writen(fd, buf, strlen(buf));
+
+    // 본문 전송
+    Rio_writen(fd, body, strlen(body));
 }
