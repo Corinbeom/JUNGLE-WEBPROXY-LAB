@@ -19,23 +19,23 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
 
 int main(int argc, char **argv)
 {
-  int listenfd, connfd;
-  char hostname[MAXLINE], port[MAXLINE];
-  socklen_t clientlen;
-  struct sockaddr_storage clientaddr;
+  int listenfd, connfd;                   //  listenfd : 클라이언트 연결 대기용 리스닝 소켓 , connfd : 하나의 클라이언트와 통신하는 연결 소켓
+  char hostname[MAXLINE], port[MAXLINE];  //  접속한 클라이언트의 이름과 포트 저장할 버퍼
+  socklen_t clientlen;                    //  accept()에서 클라이언트 주소 길이 전달용
+  struct sockaddr_storage clientaddr;     //  클라이언트 IP/port 정보 저장용 구조체
 
   /* Check command line args */
-  if (argc != 2)
+  if (argc != 2)  //  실행 시 인자가 2개가 아니면 종료 (예 : ./tiny 12345 이런식으로 포트 넘겨야함)
   {
     fprintf(stderr, "usage: %s <port>\n", argv[0]);
     exit(1);
   }
 
-  listenfd = Open_listenfd(argv[1]);
-  while (1)
+  listenfd = Open_listenfd(argv[1]);    // 서버 소켓열기
+  while (1)                             // 클라이언트 연결을 무한루프로 처리
   {
     clientlen = sizeof(clientaddr);
-    connfd = Accept(listenfd, (SA *)&clientaddr,
+    connfd = Accept(listenfd, (SA *)&clientaddr, // Accept로 들어온 연결을 doit()에 넘겨서 처리
                     &clientlen); // line:netp:tiny:accept
     Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE,
                 0);
@@ -45,65 +45,56 @@ int main(int argc, char **argv)
   }
 }
 
-/*
- * doit - handle one HTTP request/response transaction
- */
-void doit(int fd)
-{
+void doit(int fd) {
   int is_static;
   struct stat sbuf;
   char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
   char filename[MAXLINE], cgiargs[MAXLINE];
   rio_t rio;
 
-  /* Read request line and headers */
   Rio_readinitb(&rio, fd);
-  if (!Rio_readlineb(&rio, buf, MAXLINE))
-    return;
+  Rio_readlineb(&rio, buf, MAXLINE);
+  printf("Request headers :\n");
   printf("%s", buf);
   sscanf(buf, "%s %s %s", method, uri, version);
-  if (strcasecmp(method, "GET"))
-  {
-    clienterror(fd, method, "501", "Not Implemented",
-                "Tiny does not implement this method");
+
+
+  if (strstr(uri, "favicon.ico")) {
+    // *** 요청 헤더는 반드시 다 읽어줘야 함 ***
+    read_requesthdrs(&rio);  // 안 읽으면 소켓에 남은 데이터로 에러남
+    printf("Ignoring favicon.ico request\n");
+    return;
+  }
+
+  if (strcasecmp(method, "GET")) {
+    clienterror(fd, method, "501", "Not implemented", "Tiny does not implement this method");
     return;
   }
   read_requesthdrs(&rio);
 
-  /* Parse URI from GET request */
-  is_static = parse_uri(uri, filename, cgiargs);
-  if (stat(filename, &sbuf) < 0)
-  {
-    clienterror(fd, filename, "404", "Not found",
-                "Tiny couldn't find this file");
+  is_static = parse_uri(uri,filename, cgiargs);
+
+  if (stat(filename, &sbuf) < 0) {
+    clienterror(fd, filename, "404", "Not found", "Tiny couldn't find this file");
     return;
   }
 
-  if (is_static)
-  { /* Serve static content */
-    if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode))
-    {
-      clienterror(fd, filename, "403", "Forbidden",
-                  "Tiny couldn't read the file");
+  if (is_static) {
+    if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) {
+      clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't read the file");
       return;
     }
     serve_static(fd, filename, sbuf.st_size);
   }
-  else
-  { /* Serve dynamic content */
-    if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode))
-    {
-      clienterror(fd, filename, "403", "Forbidden",
-                  "Tiny couldn't run the CGI program");
+  else {
+    if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
+      clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't run the CGI program");
       return;
     }
     serve_dynamic(fd, filename, cgiargs);
   }
 }
 
-/*
- * read_requesthdrs - read HTTP request headers
- */
 void read_requesthdrs(rio_t *rp)
 {
   char buf[MAXLINE];
@@ -194,10 +185,14 @@ void serve_static(int fd, char *filename, int filesize)
 
   /* Send response body to client */
   srcfd = Open(filename, O_RDONLY, 0);
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  srcp = malloc(filesize);
+  Rio_readn(srcfd, srcp, filesize);
   Close(srcfd);
+
   Rio_writen(fd, srcp, filesize);
-  Munmap(srcp, filesize);
+  // Munmap(srcp, filesize);
+  free(srcp);
 }
 
 /*
@@ -213,6 +208,8 @@ void get_filetype(char *filename, char *filetype)
     strcpy(filetype, "image/png");
   else if (strstr(filename, ".jpg"))
     strcpy(filetype, "image/jpeg");
+  else if (strstr(filename, ".mpg") || strstr(filename, ".mpeg"))
+    strcpy(filetype, "video/mpeg");
   else
     strcpy(filetype, "text/plain");
 }
@@ -273,9 +270,6 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
   /* When we return from here, doit() will close the connection */
 }
 
-/*
- * clienterror - returns an error message to the client
- */
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg)
 {
