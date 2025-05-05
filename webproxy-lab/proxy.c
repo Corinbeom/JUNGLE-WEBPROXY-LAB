@@ -6,19 +6,30 @@
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 
-typedef struct {
-    int connfd;
-} thread_args;
-
+typedef struct CacheBlock {
+    char *uri;                 // 요청 URI (키 역할)
+    char *data;                // 실제 컨텐츠
+    int size;                  // data의 바이트 크기
+    struct CacheBlock *prev;  // 이전 캐시 블록
+    struct CacheBlock *next;  // 다음 캐시 블록
+} CacheBlock;
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr =
     "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 "
     "Firefox/10.0.3\r\n";
 
+CacheBlock *head = NULL;
+CacheBlock *tail = NULL;
+size_t current_cache_size = 0;
+pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+
 void doit(int clientfd);
 int parse_uri(char *uri, char *hostname, char *path, char *port);
 void *thread(void *vargp);
+void evict_lru(int required_size);
+void insert_cache(char *uri, char *data, int size);
 
 int main(int argc, char **argv)
 {
@@ -49,6 +60,75 @@ int main(int argc, char **argv)
     return 0;
 }
 
+CacheBlock *find_cache(char *uri) {
+    pthread_mutex_lock(&cache_lock);
+
+    CacheBlock *curr = head;
+    while (curr) {
+        if (strcmp(uri, curr->uri) == 0) {
+            // 캐시 hit → LRU 정책을 위해 head로 이동 예정
+            // move_to_head(curr); → 이건 캐시 정책 함수에서 처리할 수도 있음
+            pthread_mutex_unlock(&cache_lock);
+            return curr;
+        }
+        curr = curr->next;
+    }
+
+    pthread_mutex_unlock(&cache_lock);
+    return NULL;  // 캐시 미스
+}
+
+void evict_lru(int required_size) {
+    while (current_cache_size + required_size > MAX_CACHE_SIZE) {
+        if (tail == NULL) break;
+        current_cache_size -= tail->size;
+        free(tail->data);
+        free(tail->uri);
+        free(tail);
+        tail = tail->prev;
+        if (tail != NULL)
+            tail->next = NULL;
+        else
+            head = NULL;
+    }
+}
+
+
+void insert_cache(char *uri, char *data, int size) {
+    pthread_mutex_lock(&cache_lock);
+
+    if (current_cache_size + size > MAX_CACHE_SIZE) {
+        evict_lru(size);
+    }
+
+    CacheBlock *newCache = Malloc(sizeof(CacheBlock));
+    newCache->data = Malloc(size);
+    memcpy(newCache->data, data, size);
+
+    newCache->size = size;
+
+    newCache->uri = Malloc(strlen(uri) + 1);
+    strcpy(newCache->uri, uri);
+
+    if (head == NULL) {
+        head = newCache;
+        tail = newCache;
+        newCache->prev = NULL;
+        newCache->next = NULL;
+        current_cache_size += size;
+        pthread_mutex_unlock(&cache_lock);
+        return;
+    }
+
+    newCache->prev = NULL;
+    newCache->next = head;
+    head->prev = newCache;
+    head = newCache;
+
+    current_cache_size += size;
+    pthread_mutex_unlock(&cache_lock);
+}
+
 void *thread(void *vargp) {
     int connfd = *((int *)vargp);
     Pthread_detach(pthread_self());
@@ -60,7 +140,7 @@ void *thread(void *vargp) {
 
 void doit(int clientfd) {
     // 클라이언트 요청을 읽기 위한 버퍼들
-    char buf[MAXLINE];     // 요청 라인 전체를 담을 버퍼
+    char buf[MAXBUF];     // 요청 라인 전체를 담을 버퍼
     char method[MAXLINE];  // HTTP 메소드 (예 : "GET")
     char uri[MAXLINE];     // 요청 URI (예 :"http://...")
     char version[MAXLINE]; // HTTP 버전 (예 :"HTTP/1.1")
@@ -81,6 +161,13 @@ void doit(int clientfd) {
     // 요청 라인 파싱하여 method, uri, version 분리
     sscanf(buf, "%s %s %s", method, uri, version);
     printf("Proxy :: method=%s, uri=%s, version=%s\n", method, uri, version);
+
+    CacheBlock *cb = find_cache(uri);
+    if (cb) {
+        Rio_writen(clientfd, cb->data, cb->size);
+        Close(clientfd);
+        return;
+    }
 
     // GET 이외의 지원하지 않는 메소드 처리
     if (strcasecmp(method, "GET")) {
@@ -141,9 +228,20 @@ void doit(int clientfd) {
     int n;
     Rio_readinitb(&server_rio, serverfd);
 
+    char obj_buf[MAX_OBJECT_SIZE];
+    int total_size = 0;
+
     // 서버에서 받은 데이터를 프록시 클라이언트에게 전달
     while ((n = Rio_readnb(&server_rio, buf, MAXBUF)) > 0) {
         Rio_writen(clientfd, buf, n);  //  프록시 -> 클라이언트
+
+        if (total_size + n <= MAX_OBJECT_SIZE) {
+            memcpy(obj_buf + total_size, buf, n);
+            total_size += n;
+        }
+    }
+    if (total_size <= MAX_OBJECT_SIZE) {
+        insert_cache(uri, obj_buf, total_size);
     }
 }
 

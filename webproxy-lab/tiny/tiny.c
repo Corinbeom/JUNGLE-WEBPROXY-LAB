@@ -186,7 +186,7 @@ void serve_static(int fd, char *filename, int filesize)
   /* Send response body to client */
   srcfd = Open(filename, O_RDONLY, 0);
   // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
-  srcp = malloc(filesize);
+  srcp = Malloc(filesize);
   Rio_readn(srcfd, srcp, filesize);
   Close(srcfd);
 
