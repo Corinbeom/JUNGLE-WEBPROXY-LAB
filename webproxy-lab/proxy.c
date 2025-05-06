@@ -97,7 +97,7 @@ void evict_lru(int required_size) {
 
 
 void insert_cache(char *uri, char *data, int size) {
-    pthread_rwlock_rdlock(&cache_rwlock);
+    pthread_rwlock_wrlock(&cache_rwlock);
 
     if (current_cache_size + size > MAX_CACHE_SIZE) {
         evict_lru(size);
