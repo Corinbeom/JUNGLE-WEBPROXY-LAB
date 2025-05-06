@@ -22,7 +22,8 @@ static const char *user_agent_hdr =
 CacheBlock *head = NULL;
 CacheBlock *tail = NULL;
 size_t current_cache_size = 0;
-pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+// pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_rwlock_t cache_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
 
 void doit(int clientfd);
@@ -62,20 +63,20 @@ int main(int argc, char **argv)
 }
 
 CacheBlock *find_cache(char *uri) {
-    pthread_mutex_lock(&cache_lock);
+    pthread_rwlock_rdlock(&cache_rwlock);
 
     CacheBlock *curr = head;
     while (curr) {
         if (strcmp(uri, curr->uri) == 0) {
             // 캐시 hit → LRU 정책을 위해 head로 이동 예정
             // move_to_head(curr); → 이건 캐시 정책 함수에서 처리할 수도 있음
-            pthread_mutex_unlock(&cache_lock);
+            pthread_rwlock_unlock(&cache_rwlock);
             return curr;
         }
         curr = curr->next;
     }
 
-    pthread_mutex_unlock(&cache_lock);
+    pthread_rwlock_unlock(&cache_rwlock);
     return NULL;  // 캐시 미스
 }
 
@@ -96,7 +97,7 @@ void evict_lru(int required_size) {
 
 
 void insert_cache(char *uri, char *data, int size) {
-    pthread_mutex_lock(&cache_lock);
+    pthread_rwlock_rdlock(&cache_rwlock);
 
     if (current_cache_size + size > MAX_CACHE_SIZE) {
         evict_lru(size);
@@ -117,7 +118,7 @@ void insert_cache(char *uri, char *data, int size) {
         newCache->prev = NULL;
         newCache->next = NULL;
         current_cache_size += size;
-        pthread_mutex_unlock(&cache_lock);
+        pthread_rwlock_unlock(&cache_rwlock);
         return;
     }
 
@@ -127,7 +128,7 @@ void insert_cache(char *uri, char *data, int size) {
     head = newCache;
 
     current_cache_size += size;
-    pthread_mutex_unlock(&cache_lock);
+    pthread_rwlock_unlock(&cache_rwlock);
 }
 
 void *thread(void *vargp) {
