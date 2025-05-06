@@ -95,6 +95,20 @@ void evict_lru(int required_size) {
     }
 }
 
+void move_to_head(CacheBlock *cb) {
+    if (cb == head) return;
+
+    if (cb->prev) cb->prev->next = cb->next;
+    if (cb->next) cb->next->prev = cb->prev;
+
+    if (cb == tail) tail = cb->prev;
+
+    cb->prev = NULL;
+    cb->next = head;
+    if (head) head->prev = cb;
+    head = cb;
+}
+
 
 void insert_cache(char *uri, char *data, int size) {
     pthread_rwlock_wrlock(&cache_rwlock);
@@ -166,6 +180,7 @@ void doit(int clientfd) {
 
     CacheBlock *cb = find_cache(uri);
     if (cb) {
+        move_to_head(cb);
         Rio_writen(clientfd, cb->data, cb->size);
         Close(clientfd);
         return;
